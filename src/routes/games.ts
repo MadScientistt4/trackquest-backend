@@ -7,6 +7,8 @@ import {
   submitTrade,
   getGameHistory,
   calculateTax,
+  getSupportResistanceChallenge,
+  submitSupportResistance,
 } from '../controllers/gameController';
 
 const router = Router();
@@ -17,6 +19,10 @@ router.use(authenticate);
 // Candle Prediction
 router.get('/candle-challenge', getCandleChallenge);
 router.post('/candle-challenge/submit', submitCandlePrediction);
+
+// Support/Resistance Drawing
+router.get('/support-resistance', getSupportResistanceChallenge);
+router.post('/support-resistance/submit', submitSupportResistance);
 
 // Trade Simulation
 router.get('/trade-scenario', getTradeScenario);

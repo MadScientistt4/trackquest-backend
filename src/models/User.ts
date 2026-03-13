@@ -19,6 +19,7 @@ export interface IUser extends Document {
     patternRecognition: { played: number; correct: number; accuracy: number };
     tradeSimulation: { played: number; profitableTrades: number; totalPnL: number };
     taxSimulator: { completed: number; taxSaved: number };
+    supportResistance: { played: number; correct: number; accuracy: number };
   };
   rank: string;
   createdAt: Date;
@@ -77,6 +78,11 @@ const UserSchema = new Schema<IUser>(
       taxSimulator: {
         completed: { type: Number, default: 0 },
         taxSaved: { type: Number, default: 0 },
+      },
+      supportResistance: {
+        played: { type: Number, default: 0 },
+        correct: { type: Number, default: 0 },
+        accuracy: { type: Number, default: 0 },
       },
     },
     rank: { type: String, default: 'Novice Trader' },

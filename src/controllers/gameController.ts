@@ -352,3 +352,259 @@ export const calculateTax = async (
     next(error);
   }
 };
+
+// ─── GET SUPPORT/RESISTANCE CHALLENGE ────────────────────────────────────────
+export const getSupportResistanceChallenge = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> => {
+  try {
+    const difficulty = (req.query.difficulty as string) || 'easy';
+    
+    // Determine candle count based on difficulty
+    const candleCount = difficulty === 'easy' ? 25 : difficulty === 'medium' ? 35 : 50;
+    
+    // Generate candles - use sideways trend for clearer support/resistance
+    const candles = generateCandleData(candleCount, 2500, 'sideways');
+    
+    // Store challenge data server-side (in production, use Redis)
+    const challengeId = `${req.user?.id}-sr-${Date.now()}`;
+    
+    // Calculate actual support/resistance levels from price data
+    const prices = candles.map(c => [c.high, c.low, c.close]).flat();
+    const actualSupports = identifySupportLevels(prices);
+    const actualResistances = identifyResistanceLevels(prices);
+    
+    res.json({
+      challengeId,
+      candles,
+      difficulty,
+      timeLimit: difficulty === 'easy' ? 120 : difficulty === 'medium' ? 90 : 60,
+      instructions: 'Draw support levels (green) at price lows and resistance levels (red) at price highs.',
+      // These are hidden from client - used for validation only
+      _actualSupports: actualSupports,
+      _actualResistances: actualResistances,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// ─── SUBMIT SUPPORT/RESISTANCE DRAWING ────────────────────────────────────────
+export const submitSupportResistance = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> => {
+  try {
+    const { candles, drawnSupports, drawnResistances, difficulty, timeSpent } = req.body;
+    
+    if (!Array.isArray(drawnSupports) || !Array.isArray(drawnResistances)) {
+      return next(createError('Invalid support/resistance data', 400));
+    }
+    
+    // Calculate actual levels from provided candles
+    const prices = candles.map((c: any) => [c.high, c.low, c.close]).flat();
+    const actualSupports = identifySupportLevels(prices);
+    const actualResistances = identifyResistanceLevels(prices);
+    
+    // Score accuracy of drawn levels
+    const { supportAccuracy, resistanceAccuracy } = scoreDrawnLevels(
+      drawnSupports,
+      drawnResistances,
+      actualSupports,
+      actualResistances,
+      Math.min(...prices),
+      Math.max(...prices)
+    );
+    
+    // Calculate overall score
+    const overallAccuracy = (supportAccuracy + resistanceAccuracy) / 2;
+    let score = 0;
+    
+    if (overallAccuracy >= 85) score = 95;
+    else if (overallAccuracy >= 75) score = 80;
+    else if (overallAccuracy >= 65) score = 65;
+    else if (overallAccuracy >= 50) score = 45;
+    else score = 25;
+    
+    // Add bonus for speed
+    const baseXP = difficulty === 'easy' ? 20 : difficulty === 'medium' ? 35 : 50;
+    const speedBonus = timeSpent < 30 ? 1.25 : timeSpent < 60 ? 1.1 : 1;
+    const xpEarned = Math.floor(baseXP * speedBonus);
+    const coinsEarned = Math.floor(score * 0.5);
+    
+    // Update user
+    const user = await User.findById(req.user?.id);
+    if (!user) return next(createError('User not found', 404));
+    
+    user.stats.supportResistance.played += 1;
+    if (overallAccuracy >= 70) user.stats.supportResistance.correct += 1;
+    user.stats.supportResistance.accuracy = Math.round(
+      (user.stats.supportResistance.correct / user.stats.supportResistance.played) * 100
+    );
+    
+    user.xp += xpEarned;
+    user.coins += coinsEarned;
+    user.calculateLevel();
+    await user.save();
+    
+    // Save game session
+    await GameSession.create({
+      userId: req.user?.id,
+      gameType: 'support-resistance',
+      score,
+      xpEarned,
+      coinsEarned,
+      duration: timeSpent,
+      result: overallAccuracy >= 70 ? 'win' : 'loss',
+      details: {
+        supportAccuracy,
+        resistanceAccuracy,
+        overallAccuracy,
+        difficulty,
+        drawnCount: drawnSupports.length + drawnResistances.length,
+      },
+    });
+    
+    res.json({
+      score,
+      supportAccuracy: Math.round(supportAccuracy),
+      resistanceAccuracy: Math.round(resistanceAccuracy),
+      overallAccuracy: Math.round(overallAccuracy),
+      xpEarned,
+      coinsEarned,
+      feedback: generateSRFeedback(supportAccuracy, resistanceAccuracy),
+      grade: score >= 90 ? 'A+' : score >= 75 ? 'A' : score >= 60 ? 'B' : score >= 45 ? 'C' : 'D',
+      newStats: {
+        level: user.level,
+        xp: user.xp,
+        xpToNextLevel: user.xpToNextLevel,
+        coins: user.coins,
+        accuracy: user.stats.supportResistance.accuracy,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// ─── HELPER FUNCTIONS ────────────────────────────────────────────────────────
+
+/**
+ * Identify support levels by clustering price lows
+ */
+function identifySupportLevels(prices: number[], clusterSize: number = 5): number[] {
+  const sorted = [...prices].sort((a, b) => a - b);
+  const clusters: number[][] = [];
+  let current: number[] = [sorted[0]];
+  
+  for (let i = 1; i < sorted.length; i++) {
+    if (sorted[i] - current[current.length - 1] <= clusterSize) {
+      current.push(sorted[i]);
+    } else {
+      if (current.length >= 2) clusters.push(current);
+      current = [sorted[i]];
+    }
+  }
+  if (current.length >= 2) clusters.push(current);
+  
+  // Return average of each cluster as a support level
+  return clusters.map(cluster => 
+    Math.round((cluster.reduce((a, b) => a + b, 0) / cluster.length) * 100) / 100
+  ).slice(0, 3); // Return top 3 support levels
+}
+
+/**
+ * Identify resistance levels by clustering price highs
+ */
+function identifyResistanceLevels(prices: number[], clusterSize: number = 5): number[] {
+  const sorted = [...prices].sort((a, b) => b - a);
+  const clusters: number[][] = [];
+  let current: number[] = [sorted[0]];
+  
+  for (let i = 1; i < sorted.length; i++) {
+    if (current[current.length - 1] - sorted[i] <= clusterSize) {
+      current.push(sorted[i]);
+    } else {
+      if (current.length >= 2) clusters.push(current);
+      current = [sorted[i]];
+    }
+  }
+  if (current.length >= 2) clusters.push(current);
+  
+  // Return average of each cluster as a resistance level
+  return clusters.map(cluster => 
+    Math.round((cluster.reduce((a, b) => a + b, 0) / cluster.length) * 100) / 100
+  ).slice(0, 3); // Return top 3 resistance levels
+}
+
+/**
+ * Score the accuracy of drawn support/resistance levels
+ */
+function scoreDrawnLevels(
+  drawnSupports: number[],
+  drawnResistances: number[],
+  actualSupports: number[],
+  actualResistances: number[],
+  minPrice: number,
+  maxPrice: number
+): { supportAccuracy: number; resistanceAccuracy: number } {
+  const tolerance = (maxPrice - minPrice) * 0.02; // 2% tolerance range
+  
+  // Calculate support accuracy
+  let supportHits = 0;
+  for (const drawn of drawnSupports) {
+    for (const actual of actualSupports) {
+      if (Math.abs(drawn - actual) <= tolerance) {
+        supportHits++;
+        break;
+      }
+    }
+  }
+  const supportAccuracy = drawnSupports.length > 0 
+    ? (supportHits / Math.max(drawnSupports.length, actualSupports.length)) * 100 
+    : 0;
+  
+  // Calculate resistance accuracy
+  let resistanceHits = 0;
+  for (const drawn of drawnResistances) {
+    for (const actual of actualResistances) {
+      if (Math.abs(drawn - actual) <= tolerance) {
+        resistanceHits++;
+        break;
+      }
+    }
+  }
+  const resistanceAccuracy = drawnResistances.length > 0 
+    ? (resistanceHits / Math.max(drawnResistances.length, actualResistances.length)) * 100 
+    : 0;
+  
+  return { supportAccuracy, resistanceAccuracy };
+}
+
+/**
+ * Generate feedback for support/resistance accuracy
+ */
+function generateSRFeedback(supportAccuracy: number, resistanceAccuracy: number): string[] {
+  const feedback: string[] = [];
+  
+  if (supportAccuracy >= 80) {
+    feedback.push('✅ Excellent support level identification');
+  } else if (supportAccuracy >= 60) {
+    feedback.push('⚠️ Good support placement, but check price clusters more carefully');
+  } else {
+    feedback.push('❌ Support levels need refinement. Look for price consolidation areas');
+  }
+  
+  if (resistanceAccuracy >= 80) {
+    feedback.push('✅ Excellent resistance level identification');
+  } else if (resistanceAccuracy >= 60) {
+    feedback.push('⚠️ Good resistance placement, but verify against recent highs');
+  } else {
+    feedback.push('❌ Resistance levels need work. Identify previous price peaks');
+  }
+  
+  return feedback;
+}

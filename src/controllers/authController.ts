@@ -1,5 +1,5 @@
 import { Request, Response, NextFunction } from 'express';
-import jwt from 'jsonwebtoken';
+import jwt, { SignOptions } from 'jsonwebtoken';
 import { User } from '../models/User';
 import { createError } from '../middleware/errorHandler';
 
@@ -7,7 +7,7 @@ const signToken = (id: string, username: string, email: string): string => {
   return jwt.sign(
     { id, username, email },
     process.env.JWT_SECRET || 'fallback_secret',
-    { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
+    { expiresIn: process.env.JWT_EXPIRES_IN || '7d' } as SignOptions
   );
 };
 
