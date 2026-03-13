@@ -4,6 +4,7 @@ import { GameSession } from '../models/GameSession';
 import { User } from '../models/User';
 import { createError } from '../middleware/errorHandler';
 import { generateCandleData, CandleData } from '../utils/generateCandleData';
+import { fetchForexData, fetchCryptoData, FOREX_PAIRS, CRYPTO_SYMBOLS } from '../utils/alphaVantageClient';
 
 // ─── GET CANDLE PREDICTION CHALLENGE ────────────────────────────────────────
 export const getCandleChallenge = async (
@@ -608,3 +609,138 @@ function generateSRFeedback(supportAccuracy: number, resistanceAccuracy: number)
   
   return feedback;
 }
+
+// ─── GET CANDLE CHALLENGE WITH REAL FOREX DATA ──────────────────────────────
+export const getCandleChallengeForex = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> => {
+  try {
+    const difficulty = (req.query.difficulty as string) || 'easy';
+    const pairIndex = parseInt(req.query.pairIndex as string) || 0;
+    
+    const pair = FOREX_PAIRS[pairIndex % FOREX_PAIRS.length];
+    const candleCount = difficulty === 'easy' ? 10 : difficulty === 'medium' ? 15 : 20;
+
+    try {
+      // Fetch real data from Alpha Vantage
+      const allCandles = await fetchForexData(pair.from, pair.to, '60min', 'compact');
+      const candles = allCandles.slice(-candleCount - 1);
+      const visibleCandles = candles.slice(0, -1);
+      const nextCandle = candles[candles.length - 1];
+
+      let correctAnswer: 'bullish' | 'bearish' | 'consolidation';
+      const change = ((nextCandle.close - nextCandle.open) / nextCandle.open) * 100;
+
+      if (change > 0.5) correctAnswer = 'bullish';
+      else if (change < -0.5) correctAnswer = 'bearish';
+      else correctAnswer = 'consolidation';
+
+      const challengeId = `${req.user?.id}-forex-${Date.now()}`;
+
+      res.json({
+        challengeId,
+        candles: visibleCandles,
+        difficulty,
+        pair: pair.symbol,
+        pairLabel: pair.label,
+        timeLimit: difficulty === 'easy' ? 60 : difficulty === 'medium' ? 45 : 30,
+        hint: difficulty === 'easy' ? `The last few candles show a ${change > 0 ? 'upward' : 'downward'} trend` : null,
+        _correctAnswer: correctAnswer,
+      });
+    } catch (apiError) {
+      console.error('Alpha Vantage API Error:', apiError);
+      // Fallback to generated data if API fails
+      const candles = generateCandleData(candleCount + 3);
+      const visibleCandles = candles.slice(0, candleCount);
+      const nextCandle = candles[candleCount];
+
+      let correctAnswer: 'bullish' | 'bearish' | 'consolidation';
+      const change = ((nextCandle.close - nextCandle.open) / nextCandle.open) * 100;
+
+      if (change > 0.5) correctAnswer = 'bullish';
+      else if (change < -0.5) correctAnswer = 'bearish';
+      else correctAnswer = 'consolidation';
+
+      res.json({
+        challengeId: `${req.user?.id}-forex-${Date.now()}`,
+        candles: visibleCandles,
+        difficulty,
+        pair: pair.symbol,
+        pairLabel: pair.label,
+        timeLimit: difficulty === 'easy' ? 60 : difficulty === 'medium' ? 45 : 30,
+        hint: difficulty === 'easy' ? `The last few candles show a ${change > 0 ? 'upward' : 'downward'} trend` : null,
+        _correctAnswer: correctAnswer,
+        warning: 'Using generated data due to API rate limit. Get your own API key at https://www.alphavantage.co/api/',
+      });
+    }
+  } catch (error) {
+    next(error);
+  }
+};
+
+// ─── GET SUPPORT/RESISTANCE CHALLENGE WITH REAL FOREX DATA ───────────────────
+export const getSupportResistanceForex = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> => {
+  try {
+    const difficulty = (req.query.difficulty as string) || 'easy';
+    const pairIndex = parseInt(req.query.pairIndex as string) || 0;
+    
+    const pair = FOREX_PAIRS[pairIndex % FOREX_PAIRS.length];
+    const candleCount = difficulty === 'easy' ? 25 : difficulty === 'medium' ? 35 : 50;
+
+    let candles: CandleData[];
+    try {
+      // Try to fetch real data
+      const allCandles = await fetchForexData(pair.from, pair.to, '60min', 'compact');
+      candles = allCandles.slice(-candleCount);
+    } catch (apiError) {
+      // Fallback to generated data
+      console.error('Alpha Vantage API Error:', apiError);
+      candles = generateCandleData(candleCount, 2500, 'sideways');
+    }
+
+    const prices = candles.map(c => [c.high, c.low, c.close]).flat();
+    const actualSupports = identifySupportLevels(prices);
+    const actualResistances = identifyResistanceLevels(prices);
+
+    res.json({
+      challengeId: `${req.user?.id}-sr-forex-${Date.now()}`,
+      candles,
+      difficulty,
+      pair: pair.symbol,
+      pairLabel: pair.label,
+      timeLimit: difficulty === 'easy' ? 120 : difficulty === 'medium' ? 90 : 60,
+      instructions: 'Draw support levels (green) at price lows and resistance levels (red) at price highs.',
+      _actualSupports: actualSupports,
+      _actualResistances: actualResistances,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// ─── GET FOREX PAIRS LIST ────────────────────────────────────────────────────
+export const getForexPairs = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> => {
+  try {
+    res.json({
+      pairs: FOREX_PAIRS.map((pair, index) => ({
+        index,
+        symbol: pair.symbol,
+        label: pair.label,
+        from: pair.from,
+        to: pair.to,
+      })),
+    });
+  } catch (error) {
+    next(error);
+  }
+};
