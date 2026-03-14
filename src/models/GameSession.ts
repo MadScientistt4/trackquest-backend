@@ -4,6 +4,8 @@ export type GameType =
   | 'candle-prediction'
   | 'pattern-recognition'
   | 'support-resistance'
+  | 'stock-prediction'
+  | 'crypto-prediction'
   | 'trade-simulation'
   | 'market-replay'
   | 'financial-life'
@@ -36,6 +38,8 @@ const GameSessionSchema = new Schema<IGameSession>(
         'candle-prediction',
         'pattern-recognition',
         'support-resistance',
+        'stock-prediction',
+        'crypto-prediction',
         'trade-simulation',
         'market-replay',
         'financial-life',

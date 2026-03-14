@@ -5,7 +5,7 @@ import morgan from 'morgan';
 import mongoose from 'mongoose';
 import rateLimit from 'express-rate-limit';
 import dotenv from 'dotenv';
-
+dotenv.config();
 import authRoutes from './routes/auth';
 import userRoutes from './routes/users';
 import gameRoutes from './routes/games';

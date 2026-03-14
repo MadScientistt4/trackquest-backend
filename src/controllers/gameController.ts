@@ -5,6 +5,7 @@ import { User } from '../models/User';
 import { createError } from '../middleware/errorHandler';
 import { generateCandleData, CandleData } from '../utils/generateCandleData';
 import { fetchForexData, fetchCryptoData, FOREX_PAIRS, CRYPTO_SYMBOLS } from '../utils/alphaVantageClient';
+import { fetchStockData, fetchCryptoData as fetchPolygonCrypto, getAvailableStocks, getAvailableCrypto } from '../utils/polygonioClient';
 
 // ─── GET CANDLE PREDICTION CHALLENGE ────────────────────────────────────────
 export const getCandleChallenge = async (
@@ -739,6 +740,282 @@ export const getForexPairs = async (
         from: pair.from,
         to: pair.to,
       })),
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// ─── GET STOCK PREDICTION CHALLENGE ───────────────────────────────────────────
+export const getStockChallenge = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> => {
+  try {
+    const { ticker } = req.query;
+    const difficulty = (req.query.difficulty as string) || 'easy';
+
+    if (!ticker || typeof ticker !== 'string') {
+      return next(createError('Stock ticker is required', 400));
+    }
+
+    try {
+      const allCandles = await fetchStockData(ticker, 'day', 60);
+
+      if (allCandles.length < 2) {
+        return next(createError(`Not enough data for ${ticker}`, 400));
+      }
+
+      const candleCount = difficulty === 'easy' ? 10 : difficulty === 'medium' ? 15 : 20;
+      const visibleCandles = allCandles.slice(Math.max(0, allCandles.length - candleCount - 3), allCandles.length - 3);
+      const nextCandle = allCandles[allCandles.length - 1];
+
+      let correctAnswer: 'bullish' | 'bearish' | 'consolidation';
+      const change = ((nextCandle.close - nextCandle.open) / nextCandle.open) * 100;
+
+      if (change > 0.5) correctAnswer = 'bullish';
+      else if (change < -0.5) correctAnswer = 'bearish';
+      else correctAnswer = 'consolidation';
+
+      const challengeId = `${req.user?.id}-${Date.now()}`;
+
+      res.json({
+        challengeId,
+        ticker,
+        candles: visibleCandles,
+        difficulty,
+        timeLimit: difficulty === 'easy' ? 60 : difficulty === 'medium' ? 45 : 30,
+        hint: difficulty === 'easy' ? `The trend is ${change > 0 ? 'upward' : 'downward'}` : null,
+        _correctAnswer: correctAnswer,
+      });
+    } catch (error: any) {
+      if (error.message.includes('not found')) {
+        return next(createError(`Stock ${ticker} not found. Try: AAPL, GOOGL, MSFT, TSLA`, 400));
+      }
+      throw error;
+    }
+  } catch (error) {
+    next(error);
+  }
+};
+
+// ─── SUBMIT STOCK PREDICTION ──────────────────────────────────────────────────
+export const submitStockPrediction = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> => {
+  try {
+    const { prediction, correctAnswer, ticker, difficulty, timeSpent } = req.body;
+
+    if (!['bullish', 'bearish', 'consolidation'].includes(prediction)) {
+      return next(createError('Invalid prediction', 400));
+    }
+
+    const isCorrect = prediction === correctAnswer;
+    const baseXP = difficulty === 'easy' ? 20 : difficulty === 'medium' ? 30 : 50;
+    const baseCoins = difficulty === 'easy' ? 15 : difficulty === 'medium' ? 25 : 45;
+
+    const xpEarned = isCorrect ? baseXP : Math.floor(baseXP * 0.1);
+    const coinsEarned = isCorrect ? baseCoins : 0;
+    const score = isCorrect ? (timeSpent < 10 ? 100 : timeSpent < 20 ? 80 : 60) : 0;
+
+    const user = await User.findById(req.user?.id);
+    if (!user) return next(createError('User not found', 404));
+
+    user.stats.stockPrediction.played += 1;
+    if (isCorrect) user.stats.stockPrediction.correct += 1;
+    user.stats.stockPrediction.accuracy =
+      Math.round((user.stats.stockPrediction.correct / user.stats.stockPrediction.played) * 100);
+
+    user.xp += xpEarned;
+    user.coins += coinsEarned;
+    user.calculateLevel();
+    await user.save();
+
+    await GameSession.create({
+      userId: req.user?.id,
+      gameType: 'stock-prediction',
+      score,
+      xpEarned,
+      coinsEarned,
+      duration: timeSpent,
+      result: isCorrect ? 'win' : 'loss',
+      details: { prediction, correctAnswer, ticker, difficulty },
+    });
+
+    res.json({
+      isCorrect,
+      prediction,
+      correctAnswer,
+      ticker,
+      xpEarned,
+      coinsEarned,
+      score,
+      explanation: isCorrect
+        ? `🎯 Excellent! You correctly predicted ${ticker}'s movement.`
+        : `📈 The stock moved "${correctAnswer}". Study the price action more carefully.`,
+      newStats: {
+        level: user.level,
+        xp: user.xp,
+        xpToNextLevel: user.xpToNextLevel,
+        coins: user.coins,
+        accuracy: user.stats.stockPrediction.accuracy,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// ─── GET CRYPTO PREDICTION CHALLENGE ──────────────────────────────────────────
+export const getCryptoChallenge = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> => {
+  try {
+    const { symbol } = req.query;
+    const difficulty = (req.query.difficulty as string) || 'easy';
+
+    if (!symbol || typeof symbol !== 'string') {
+      return next(createError('Crypto symbol is required', 400));
+    }
+
+    try {
+      const allCandles = await fetchPolygonCrypto(symbol, 'USD', 'day', 60);
+
+      if (allCandles.length < 2) {
+        return next(createError(`Not enough data for ${symbol}`, 400));
+      }
+
+      const candleCount = difficulty === 'easy' ? 10 : difficulty === 'medium' ? 15 : 20;
+      const visibleCandles = allCandles.slice(Math.max(0, allCandles.length - candleCount - 3), allCandles.length - 3);
+      const nextCandle = allCandles[allCandles.length - 1];
+
+      let correctAnswer: 'bullish' | 'bearish' | 'consolidation';
+      const change = ((nextCandle.close - nextCandle.open) / nextCandle.open) * 100;
+
+      if (change > 0.5) correctAnswer = 'bullish';
+      else if (change < -0.5) correctAnswer = 'bearish';
+      else correctAnswer = 'consolidation';
+
+      const challengeId = `${req.user?.id}-${Date.now()}`;
+
+      res.json({
+        challengeId,
+        symbol,
+        candles: visibleCandles,
+        difficulty,
+        timeLimit: difficulty === 'easy' ? 60 : difficulty === 'medium' ? 45 : 30,
+        hint: difficulty === 'easy' ? `The trend is ${change > 0 ? 'upward' : 'downward'}` : null,
+        _correctAnswer: correctAnswer,
+      });
+    } catch (error: any) {
+      if (error.message.includes('not found')) {
+        return next(createError(`Crypto ${symbol} not found. Try: BTC, ETH, DOGE, XRP`, 400));
+      }
+      throw error;
+    }
+  } catch (error) {
+    next(error);
+  }
+};
+
+// ─── SUBMIT CRYPTO PREDICTION ─────────────────────────────────────────────────
+export const submitCryptoPrediction = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> => {
+  try {
+    const { prediction, correctAnswer, symbol, difficulty, timeSpent } = req.body;
+
+    if (!['bullish', 'bearish', 'consolidation'].includes(prediction)) {
+      return next(createError('Invalid prediction', 400));
+    }
+
+    const isCorrect = prediction === correctAnswer;
+    const baseXP = difficulty === 'easy' ? 25 : difficulty === 'medium' ? 40 : 60;
+    const baseCoins = difficulty === 'easy' ? 20 : difficulty === 'medium' ? 30 : 50;
+
+    const xpEarned = isCorrect ? baseXP : Math.floor(baseXP * 0.1);
+    const coinsEarned = isCorrect ? baseCoins : 0;
+    const score = isCorrect ? (timeSpent < 10 ? 100 : timeSpent < 20 ? 80 : 60) : 0;
+
+    const user = await User.findById(req.user?.id);
+    if (!user) return next(createError('User not found', 404));
+
+    user.stats.cryptoPrediction.played += 1;
+    if (isCorrect) user.stats.cryptoPrediction.correct += 1;
+    user.stats.cryptoPrediction.accuracy =
+      Math.round((user.stats.cryptoPrediction.correct / user.stats.cryptoPrediction.played) * 100);
+
+    user.xp += xpEarned;
+    user.coins += coinsEarned;
+    user.calculateLevel();
+    await user.save();
+
+    await GameSession.create({
+      userId: req.user?.id,
+      gameType: 'crypto-prediction',
+      score,
+      xpEarned,
+      coinsEarned,
+      duration: timeSpent,
+      result: isCorrect ? 'win' : 'loss',
+      details: { prediction, correctAnswer, symbol, difficulty },
+    });
+
+    res.json({
+      isCorrect,
+      prediction,
+      correctAnswer,
+      symbol,
+      xpEarned,
+      coinsEarned,
+      score,
+      explanation: isCorrect
+        ? `🎯 Crypto mastery! You correctly predicted ${symbol}'s movement.`
+        : `📊 ${symbol} moved "${correctAnswer}". Keep practicing volatile assets!`,
+      newStats: {
+        level: user.level,
+        xp: user.xp,
+        xpToNextLevel: user.xpToNextLevel,
+        coins: user.coins,
+        accuracy: user.stats.cryptoPrediction.accuracy,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// ─── GET AVAILABLE STOCKS ────────────────────────────────────────────────────
+export const getAvailableStocksList = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> => {
+  try {
+    res.json({
+      stocks: getAvailableStocks(),
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// ─── GET AVAILABLE CRYPTOS ───────────────────────────────────────────────────
+export const getAvailableCryptoList = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> => {
+  try {
+    res.json({
+      cryptos: getAvailableCrypto(),
     });
   } catch (error) {
     next(error);

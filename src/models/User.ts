@@ -20,6 +20,8 @@ export interface IUser extends Document {
     tradeSimulation: { played: number; profitableTrades: number; totalPnL: number };
     taxSimulator: { completed: number; taxSaved: number };
     supportResistance: { played: number; correct: number; accuracy: number };
+    stockPrediction: { played: number; correct: number; accuracy: number };
+    cryptoPrediction: { played: number; correct: number; accuracy: number };
   };
   rank: string;
   createdAt: Date;
@@ -80,6 +82,16 @@ const UserSchema = new Schema<IUser>(
         taxSaved: { type: Number, default: 0 },
       },
       supportResistance: {
+        played: { type: Number, default: 0 },
+        correct: { type: Number, default: 0 },
+        accuracy: { type: Number, default: 0 },
+      },
+      stockPrediction: {
+        played: { type: Number, default: 0 },
+        correct: { type: Number, default: 0 },
+        accuracy: { type: Number, default: 0 },
+      },
+      cryptoPrediction: {
         played: { type: Number, default: 0 },
         correct: { type: Number, default: 0 },
         accuracy: { type: Number, default: 0 },

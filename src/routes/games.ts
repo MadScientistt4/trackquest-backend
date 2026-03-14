@@ -12,6 +12,12 @@ import {
   getCandleChallengeForex,
   getSupportResistanceForex,
   getForexPairs,
+  getStockChallenge,
+  submitStockPrediction,
+  getCryptoChallenge,
+  submitCryptoPrediction,
+  getAvailableStocksList,
+  getAvailableCryptoList,
 } from '../controllers/gameController';
 
 const router = Router();
@@ -35,6 +41,16 @@ router.get('/support-resistance-forex', getSupportResistanceForex);
 
 // Forex Pairs
 router.get('/forex-pairs', getForexPairs);
+
+// Stock Prediction (Real Data)
+router.get('/stock-challenge', getStockChallenge);
+router.post('/stock-challenge/submit', submitStockPrediction);
+router.get('/stocks', getAvailableStocksList);
+
+// Crypto Prediction (Real Data)
+router.get('/crypto-challenge', getCryptoChallenge);
+router.post('/crypto-challenge/submit', submitCryptoPrediction);
+router.get('/cryptos', getAvailableCryptoList);
 
 // Trade Simulation
 router.get('/trade-scenario', getTradeScenario);
